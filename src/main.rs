@@ -8,10 +8,11 @@ use std::time::Instant;
 use std::error::Error;
 
 
-const PORT : &'static str = "8001";
+const SERVER_PORT : &'static str = "8001";
+const CLIENT_PORT : &'static str = "8002";
 const ACK : &'static str = "message received\n";
 
-fn handle_stdin(mut stream: TcpStream) {
+fn handle_send(mut stream: TcpStream) {
     loop {
         let mut input = String::new();
         match io::stdin().read_line(&mut input) {
@@ -51,10 +52,9 @@ fn handle_stdin(mut stream: TcpStream) {
         }
 
         match str::from_utf8(&buffer) {
-            Ok(s) => {
+            Ok(_) => {
                 let elapsed = start.elapsed();
-                print!("{}", s);
-                println!("Roundtrip time is {} us",
+                println!("Message is sent successfully, and the roundtrip time is {} us",
                          (elapsed.as_secs() * 1_000_000) + (elapsed.subsec_nanos() / 1_000) as u64);
             }
             Err(e) => {
@@ -65,7 +65,7 @@ fn handle_stdin(mut stream: TcpStream) {
     }
 }
 
-fn handle_stream(mut stream: TcpStream) {
+fn handle_receive(mut stream: TcpStream) {
     loop {
         {
             let mut buffer = Vec::new();
@@ -74,6 +74,15 @@ fn handle_stream(mut stream: TcpStream) {
                 Ok(n) => {
                     if n == 0 {
                         break;
+                    }
+                    match str::from_utf8(&buffer) {
+                        Ok(s) => {
+                            print!("Receive: {}", s);
+                        }
+                        Err(e) => {
+                            println!("str::from_utf8 error: {}", e.description());
+                            break;
+                        }
                     }
                 }
                 Err(e) => {
@@ -93,17 +102,9 @@ fn handle_stream(mut stream: TcpStream) {
     }
 }
 
-fn handle_io(stream: TcpStream) {
-    match stream.try_clone() {
-        Ok(stream_clone) => {
-            thread::spawn({move || handle_stdin(stream_clone)});
-            handle_stream(stream);
-        }
-        Err(e) => {
-            println!("Clone failed: {}.", e.description());
-            process::exit(1);
-        }
-    }
+fn handle_io(send_stream: TcpStream, receive_stream: TcpStream) {
+    thread::spawn({move || handle_send(send_stream)});
+    handle_receive(receive_stream);
 }
 
 fn get_addr(ip : &str, port : &str) -> String {
@@ -117,47 +118,75 @@ fn get_addr(ip : &str, port : &str) -> String {
 }
 
 fn client(ip: &str) {
-    let addr = get_addr(ip, PORT);
-    let peer = addr.clone();
+    let listener = create_listener("0.0.0.0", CLIENT_PORT, false);
+    let send_stream = connect(ip, SERVER_PORT, true);
 
-    match TcpStream::connect(addr) {
-        Ok(stream) => {
-            println!("Connect {} successfully.", peer);
-            handle_io(stream);
-        }
-        Err(e) => {
-            println!("Connect {} error: {}.", peer, e.description());
+    for stream in listener.incoming() {
+        match stream {
+            Err(e) => {
+                println!("Receive connection failed: {}", e.description());
+                break;
+            }
+            Ok(receive_stream) => {
+                handle_io(send_stream, receive_stream);
+                break;
+            }
         }
     }
 }
 
-fn server() {
-    let addr = get_addr("0.0.0.0", PORT);
+fn connect(ip: &str, port: &str, show: bool) -> TcpStream {
+    let addr = get_addr(ip, port);
+    let peer = addr.clone();
+
+    match TcpStream::connect(addr) {
+        Ok(stream) => {
+            if show {
+                println!("Connect {} successfully.", peer);
+            }
+            return stream;
+        }
+        Err(e) => {
+            println!("Connect {} error: {}.", peer, e.description());
+            process::exit(1);
+        }
+    }
+}
+
+fn create_listener(ip: &str, port: &str, show: bool) -> TcpListener {
+    let addr = get_addr(ip, port);
     let local = addr.clone();
 
     let listener: TcpListener;
     match TcpListener::bind(addr) {
         Ok(l) => {
             listener = l;
-            println!("Bind {} successfully.", local);
+            if show {
+                println!("Bind {} successfully.", local);
+            }
+            return listener;
         },
         Err(e) => {
             println!("Bind {} error: {}.", local, e.description());
             process::exit(1);
         }
     }
+}
 
-    for stream in listener.incoming() {
-        match stream {
+fn server() {
+    let listener = create_listener("0.0.0.0", SERVER_PORT, true);
+
+    for receive_stream in listener.incoming() {
+        match receive_stream {
             Err(e) => {
                 println!("Receive connection failed: {}", e.description());
             }
-            Ok(stream) => {
-                let peer = stream.peer_addr();
+            Ok(receive_stream) => {
+                let peer = receive_stream.peer_addr();
                 match peer {
                     Ok(p) => {
                         println!("Client address: {}:{}.", p.ip(), p.port());
-                        handle_io(stream);
+                        handle_io(connect(&(format!("{}", p.ip()))[..], CLIENT_PORT, false),receive_stream);
                     }
                     Err(e) => {
                         println!("Connection error: {}.", e.description());
