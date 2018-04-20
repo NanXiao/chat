@@ -3,7 +3,7 @@ use std::process;
 use std::net::{TcpListener, TcpStream};
 use std::str;
 use std::thread;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::time::Instant;
 use std::error::Error;
 
@@ -68,9 +68,9 @@ fn handle_send(mut stream: TcpStream) {
 fn handle_receive(mut stream: TcpStream) {
     loop {
         {
-            let mut buffer = Vec::new();
+            let mut buffer = vec![0; 64 * 1024];
             let mut reader = BufReader::new(&stream);
-            match reader.read_until(b'\n', &mut buffer) {
+            match reader.read(&mut buffer) {
                 Ok(n) => {
                     if n == 0 {
                         break;
